@@ -1,0 +1,11 @@
+*.cmd
+*.ko
+*.o
+Makefile
+README
+Module.
+*.mod
+Module.symvers
+modules.order
+hello
+hellomod.mod.c
