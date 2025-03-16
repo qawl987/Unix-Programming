@@ -17,28 +17,195 @@
 #include <linux/device.h>
 #include <linux/cdev.h>
 
+#include <linux/printk.h>
+#include <crypto/skcipher.h>
+#include <linux/scatterlist.h>
 static dev_t devnum;
 static struct cdev c_dev;
 static struct class *clazz;
+char freq[] =
+"0000000000000000"
+"0000000000000000"
+"0000000000000000"
+"0000000000000000"
+"0000000000000000"
+"0000000000000000"
+"0000000000000000"
+"0000000000000000"
+"0000000000000000"
+"0000000000000000"
+"0000000000000000"
+"0000000000000000"
+"0000000000000000"
+"0000000000000000"
+"0000000000000000"
+"0000000000000000";
+int read_byte = 0;
+int write_byte = 0;
+
+struct cryptomod_data {
+    char *buffer;
+    size_t size;
+}; 
+// u8 u8_key = 0x01;
+// u8 *aes_key = &u8_key;
+size_t key_len = 16;
+
+uint8_t *aes_key = (uint8_t[]) {0x12, 0x34, 0x56, 0x78, 
+	0x9A, 0xBC, 0xDE, 0xF0, 
+	0x11, 0x22, 0x33, 0x44, 
+	0x55, 0x66, 0x77, 0x88};
+
+static int test_skcipher(u8 *key, size_t key_len, u8 *data, size_t datasize, int enc)
+{
+    struct crypto_skcipher *tfm = NULL;
+    struct skcipher_request *req = NULL;
+    struct scatterlist sg;
+    DECLARE_CRYPTO_WAIT(wait);
+    int err;
+
+    printk(KERN_INFO "test_skcipher: Starting encryption/decryption. key_len: %zu, data_size: %zu.\n", key_len, datasize);
+
+    tfm = crypto_alloc_skcipher("ecb(aes)", 0, 0);
+    if (IS_ERR(tfm)) {
+        printk(KERN_ERR "test_skcipher: Failed to allocate skcipher\n");
+        return PTR_ERR(tfm);
+    }
+
+    err = crypto_skcipher_setkey(tfm, key, key_len);
+    if (err) {
+        printk(KERN_ERR "test_skcipher: Failed to set key\n");
+        goto out;
+    }
+
+    req = skcipher_request_alloc(tfm, GFP_KERNEL);
+    if (!req) {
+        printk(KERN_ERR "test_skcipher: Failed to allocate request\n");
+        err = -ENOMEM;
+        goto out;
+    }
+
+    sg_init_one(&sg, data, datasize);
+    skcipher_request_set_callback(req, CRYPTO_TFM_REQ_MAY_BACKLOG | CRYPTO_TFM_REQ_MAY_SLEEP, crypto_req_done, &wait);
+    skcipher_request_set_crypt(req, &sg, &sg, datasize, NULL);
+
+    if (enc) {
+        printk(KERN_INFO "test_skcipher: Encrypting data\n");
+        err = crypto_wait_req(crypto_skcipher_encrypt(req), &wait);
+    } else {
+        printk(KERN_INFO "test_skcipher: Decrypting data\n");
+        err = crypto_wait_req(crypto_skcipher_decrypt(req), &wait);
+    }
+
+    if (err) {
+        printk(KERN_ERR "test_skcipher: Encryption/Decryption failed with error %d\n", err);
+        goto out;
+    }
+
+out:
+    if (tfm)
+        crypto_free_skcipher(tfm);
+    if (req)
+        skcipher_request_free(req);
+    printk(KERN_INFO "test_skcipher: Operation completed with status %d\n", err);
+    return err;
+}
 
 static int hellomod_dev_open(struct inode *i, struct file *f) {
-	printk(KERN_INFO "hellomod: device opened.\n");
-	return 0;
+	struct cryptomod_data *data;
+
+    // 分配一個 private_data 給這個開啟的檔案
+    data = kzalloc(sizeof(struct cryptomod_data), GFP_KERNEL);
+    if (!data)
+        return -ENOMEM;
+
+    f->private_data = data; // 綁定到這個 file 結構
+    printk(KERN_INFO "hellomod: device opened.\n");
+    return 0;
 }
 
 static int hellomod_dev_close(struct inode *i, struct file *f) {
-	printk(KERN_INFO "hellomod: device closed.\n");
-	return 0;
-}
-
-static ssize_t hellomod_dev_read(struct file *f, char __user *buf, size_t len, loff_t *off) {
-	printk(KERN_INFO "hellomod: read %zu bytes @ %llu.\n", len, *off);
-	return len;
+	struct cryptomod_data *data = f->private_data;
+    if (data) {
+        if (data->buffer)
+            kfree(data->buffer);
+        kfree(data);
+    }
+    printk(KERN_INFO "hellomod: device closed.\n");
+    return 0;
 }
 
 static ssize_t hellomod_dev_write(struct file *f, const char __user *buf, size_t len, loff_t *off) {
-	printk(KERN_INFO "hellomod: write %zu bytes @ %llu.\n", len, *off);
-	return len;
+	struct cryptomod_data *data = f->private_data;
+    if (!data) return -EINVAL;
+
+    printk(KERN_INFO "hellomod: write %zu bytes @ %llu.\n", len, *off);
+	// 釋放舊 buffer
+    if(data->buffer){
+        kfree(data->buffer);
+	}
+	printk(KERN_INFO "free data buffer success");
+    // 分配新 buffer
+    data->buffer = kmalloc(len, GFP_KERNEL);
+    if (!data->buffer){
+        return -ENOMEM;
+	}
+	printk(KERN_INFO "allocate buffer success");
+    // 從 user space 複製資料到 kernel buffer
+    if (copy_from_user(data->buffer, buf, len)) {
+        kfree(data->buffer);
+        return -EFAULT;
+    }
+
+	printk(KERN_INFO "User buffer contents: ");
+    for (size_t i = 0; i < len; i++) {
+        printk(KERN_CONT "%c", data->buffer[i]); // Print each byte as hex
+    }
+    printk(KERN_CONT "\n");
+
+    data->size = len;
+
+    // 執行 AES 加密
+    if (test_skcipher(aes_key, key_len, data->buffer, data->size, 1)) {
+		printk(KERN_INFO "crypto_error");
+        kfree(data->buffer);
+        return -EINVAL;
+    }
+
+	for (size_t i = 0; i < len; i++) {
+        printk(KERN_CONT "%c", data->buffer[i]); // Print each byte as hex
+    }
+    printk(KERN_CONT "\n");
+    return len;
+}
+
+static ssize_t hellomod_dev_read(struct file *f, char __user *buf, size_t len, loff_t *off) {
+	struct cryptomod_data *data = f->private_data;
+    if (!data || !data->buffer || data->size == 0)
+        return 0; // 沒有資料可if讀
+
+    printk(KERN_INFO "hellomod: read %zu bytes @ %llu.\n", len, *off);
+
+    // 分配暫存 buffer 來存放解密結果
+    char *temp_buffer = kmalloc(data->size, GFP_KERNEL);
+    if (!temp_buffer) return -ENOMEM;
+
+    memcpy(temp_buffer, data->buffer, data->size);
+
+    // 執行 AES 解密
+    if (test_skcipher(aes_key, key_len, temp_buffer, data->size, 0)) {
+        kfree(temp_buffer);
+        return -EINVAL;
+    }
+
+    // 把解密後的資料送回 user-space
+    if (copy_to_user(buf, temp_buffer, data->size)) {
+        kfree(temp_buffer);
+        return -EFAULT;
+    }
+
+    kfree(temp_buffer);
+    return data->size;
 }
 
 static long hellomod_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long arg) {
@@ -57,26 +224,9 @@ static const struct file_operations hellomod_dev_fops = {
 
 static int hellomod_proc_read(struct seq_file *m, void *v) {
 	// char buf[] = "`hello, world!` in /proc.\n";
-	char tmp[] =
-"0000000000000000"
-"0000000000000000"
-"0000000000000000"
-"0000000000000000"
-"0000000000000000"
-"0000000000000000"
-"0000000000000000"
-"0000000000000000"
-"0000000000000000"
-"0000000000000000"
-"0000000000000000"
-"0000000000000000"
-"0000000000000000"
-"0000000000000000"
-"0000000000000000"
-"0000000000000000";
 	seq_printf(m, "%s", "0 0\n");
 	for (int i = 0; i < 16 * 16; i++) {
-        seq_printf(m, "%c ", tmp[i]);
+        seq_printf(m, "%c ", freq[i]);
         if ((i + 1) % 16 == 0) // New line after every 16 elements
 			seq_printf(m, "\n");
     }
