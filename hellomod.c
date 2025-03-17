@@ -3,6 +3,7 @@
 * by Chun-Ying Huang <chuang@cs.nctu.edu.tw>
 * License: GPLv2
 */
+#include "cryptomod.h"
 #include <linux/module.h>	// included for all kernel modules
 #include <linux/kernel.h>	// included for KERN_INFO
 #include <linux/init.h>		// included for __init and __exit macros
@@ -20,6 +21,7 @@
 #include <linux/printk.h>
 #include <crypto/skcipher.h>
 #include <linux/scatterlist.h>
+
 static dev_t devnum;
 static struct cdev c_dev;
 static struct class *clazz;
@@ -46,6 +48,7 @@ int write_byte = 0;
 struct cryptomod_data {
     char *buffer;
     size_t size;
+	struct CryptoSetup setup;
 }; 
 // u8 u8_key = 0x01;
 // u8 *aes_key = &u8_key;
@@ -56,6 +59,13 @@ uint8_t *aes_key = (uint8_t[]) {0x12, 0x34, 0x56, 0x78,
 	0x11, 0x22, 0x33, 0x44, 
 	0x55, 0x66, 0x77, 0x88};
 
+void pkcs7_pad(char *buffer, int length, int block_size) {
+	int padding_length = block_size - (length % block_size);
+	for (int i = 0; i < padding_length; i++) {
+		buffer[length + i] = padding_length; // Add padding value
+	}
+}
+	
 static int test_skcipher(u8 *key, size_t key_len, u8 *data, size_t datasize, int enc)
 {
     struct crypto_skcipher *tfm = NULL;
@@ -157,13 +167,16 @@ static ssize_t hellomod_dev_write(struct file *f, const char __user *buf, size_t
         return -EFAULT;
     }
 
+	// Add padding
+	pkcs7_pad(data->buffer, len, 16);
+	// Print debug
 	printk(KERN_INFO "User buffer contents: ");
-    for (size_t i = 0; i < len; i++) {
+    for (size_t i = 0; i < 16; i++) {
         printk(KERN_CONT "%c", data->buffer[i]); // Print each byte as hex
     }
     printk(KERN_CONT "\n");
 
-    data->size = len;
+    data->size = 16;
 
     // 執行 AES 加密
     if (test_skcipher(aes_key, key_len, data->buffer, data->size, 1)) {
@@ -210,6 +223,31 @@ static ssize_t hellomod_dev_read(struct file *f, char __user *buf, size_t len, l
 
 static long hellomod_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long arg) {
 	printk(KERN_INFO "hellomod: ioctl cmd=%u arg=%lu.\n", cmd, arg);
+	struct cryptomod_data *data = fp->private_data;
+	switch (cmd) {
+        case CM_IOC_SETUP:
+            if (copy_from_user(&data->setup, (struct CryptoSetup __user *)arg, sizeof(struct CryptoSetup))) {
+                return -EFAULT;
+            }
+            printk(KERN_INFO "hellomod: ioctl SETUP - key_len: %d, io_mode: %d, c_mode: %d\n",
+                   data->setup.key_len, data->setup.io_mode, data->setup.c_mode);
+            break;
+
+        case CM_IOC_FINALIZE:
+            printk(KERN_INFO "hellomod: ioctl FINALIZE\n");
+            break;
+
+        case CM_IOC_CLEANUP:
+            printk(KERN_INFO "hellomod: ioctl CLEANUP\n");
+            break;
+
+        case CM_IOC_CNT_RST:
+            printk(KERN_INFO "hellomod: ioctl COUNT RESET\n");
+            break;
+
+        default:
+            return -EINVAL;
+    }
 	return 0;
 }
 
