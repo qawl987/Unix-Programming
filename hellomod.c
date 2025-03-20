@@ -48,16 +48,17 @@ int write_byte = 0;
 struct cryptomod_data {
     char *buffer;
     size_t size;
+	size_t pad_size;
 	struct CryptoSetup setup;
 }; 
 // u8 u8_key = 0x01;
 // u8 *aes_key = &u8_key;
-size_t key_len = 16;
+// size_t key_len = 16;
 
-uint8_t *aes_key = (uint8_t[]) {0x12, 0x34, 0x56, 0x78, 
-	0x9A, 0xBC, 0xDE, 0xF0, 
-	0x11, 0x22, 0x33, 0x44, 
-	0x55, 0x66, 0x77, 0x88};
+// uint8_t *aes_key = (uint8_t[]) {0x12, 0x34, 0x56, 0x78, 
+// 	0x9A, 0xBC, 0xDE, 0xF0, 
+// 	0x11, 0x22, 0x33, 0x44, 
+// 	0x55, 0x66, 0x77, 0x88};
 
 void pkcs7_pad(char *buffer, int length, int block_size) {
 	int padding_length = block_size - (length % block_size);
@@ -148,6 +149,7 @@ static int hellomod_dev_close(struct inode *i, struct file *f) {
 static ssize_t hellomod_dev_write(struct file *f, const char __user *buf, size_t len, loff_t *off) {
 	struct cryptomod_data *data = f->private_data;
     if (!data) return -EINVAL;
+	data->size = len;
 
     printk(KERN_INFO "hellomod: write %zu bytes @ %llu.\n", len, *off);
 	// 釋放舊 buffer
@@ -168,18 +170,21 @@ static ssize_t hellomod_dev_write(struct file *f, const char __user *buf, size_t
     }
 
 	// Add padding
-	pkcs7_pad(data->buffer, len, 16);
+	pkcs7_pad(data->buffer, len, CM_BLOCK_SIZE);
 	// Print debug
-	printk(KERN_INFO "User buffer contents: ");
-    for (size_t i = 0; i < 16; i++) {
-        printk(KERN_CONT "%c", data->buffer[i]); // Print each byte as hex
-    }
-    printk(KERN_CONT "\n");
+	// printk(KERN_INFO "User buffer contents: ");
+    // for (size_t i = 0; i < 16; i++) {
+    //     printk(KERN_CONT "%c", data->buffer[i]); // Print each byte as hex
+    // }
+    // printk(KERN_CONT "\n");
+	data->pad_size = 16;
 
-    data->size = 16;
-
-    // 執行 AES 加密
-    if (test_skcipher(aes_key, key_len, data->buffer, data->size, 1)) {
+	// 執行 AES 加密
+	int key_len = data->setup.key_len;
+	char aes_key[CM_KEY_MAX_LEN];
+	memcpy(aes_key, data->setup.key, CM_KEY_MAX_LEN);
+	// TODO 16 need change
+    if (test_skcipher((u8 *)&aes_key, key_len, data->buffer, data->pad_size, 1)) {
 		printk(KERN_INFO "crypto_error");
         kfree(data->buffer);
         return -EINVAL;
@@ -200,19 +205,22 @@ static ssize_t hellomod_dev_read(struct file *f, char __user *buf, size_t len, l
     printk(KERN_INFO "hellomod: read %zu bytes @ %llu.\n", len, *off);
 
     // 分配暫存 buffer 來存放解密結果
-    char *temp_buffer = kmalloc(data->size, GFP_KERNEL);
+    char *temp_buffer = kmalloc(data->pad_size, GFP_KERNEL);
     if (!temp_buffer) return -ENOMEM;
 
-    memcpy(temp_buffer, data->buffer, data->size);
+    memcpy(temp_buffer, data->buffer, data->pad_size);
 
     // 執行 AES 解密
-    if (test_skcipher(aes_key, key_len, temp_buffer, data->size, 0)) {
+	int key_len = data->setup.key_len;
+	char aes_key[CM_KEY_MAX_LEN];
+	memcpy(aes_key, data->setup.key, CM_KEY_MAX_LEN);
+    if (test_skcipher(aes_key, key_len, temp_buffer, data->pad_size, 0)) {
         kfree(temp_buffer);
         return -EINVAL;
     }
 
     // 把解密後的資料送回 user-space
-    if (copy_to_user(buf, temp_buffer, data->size)) {
+    if (copy_to_user(buf, temp_buffer, data->pad_size)) {
         kfree(temp_buffer);
         return -EFAULT;
     }
