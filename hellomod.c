@@ -223,15 +223,6 @@ static long hellomod_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long 
                 }
                 printk(KERN_INFO "hellomod: ioctl FINALIZE - ENCRYPT done\n");
             } else if(data->setup.c_mode == DEC) {
-                // Check end byte for padding
-                int pad_size = data->buffer[data->size - 1];
-                // Check if last byte chars are all equal last byte
-                for (int i = 1; i <= pad_size; i++) {
-                    if (data->buffer[data->size - i] != pad_size) {
-                        printk(KERN_ERR "hellomod: padding error.\n");
-                        return -EINVAL;
-                    }
-                }
                 // 執行 AES 解密
                 int key_len = data->setup.key_len;
                 char aes_key[CM_KEY_MAX_LEN];
@@ -241,6 +232,18 @@ static long hellomod_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long 
                     return -EINVAL;
                 }
                 printk(KERN_INFO "hellomod: ioctl FINALIZE - DECRYPT\n");
+                // Check end byte for padding
+                int pad_size = data->buffer[data->size - 1];
+                printk("pad_size: %d data_size: %zu\n", pad_size, data->size);
+                // Check if last byte chars are all equal last byte
+                for (int i = 1; i <= pad_size; i++) {
+                    if (data->buffer[data->size - i] != pad_size) {
+                        printk(KERN_ERR "hellomod: padding error.\n");
+                        return -EINVAL;
+                    }
+                }
+                // Remove padding
+                data->size -= pad_size;
             } else {
                 return -EINVAL;
             }
