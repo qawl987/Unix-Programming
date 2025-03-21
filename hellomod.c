@@ -21,53 +21,34 @@
 #include <linux/printk.h>
 #include <crypto/skcipher.h>
 #include <linux/scatterlist.h>
-
+#define BUFFER_SIZE 2048
 static dev_t devnum;
 static struct cdev c_dev;
 static struct class *clazz;
-char freq[] =
-"0000000000000000"
-"0000000000000000"
-"0000000000000000"
-"0000000000000000"
-"0000000000000000"
-"0000000000000000"
-"0000000000000000"
-"0000000000000000"
-"0000000000000000"
-"0000000000000000"
-"0000000000000000"
-"0000000000000000"
-"0000000000000000"
-"0000000000000000"
-"0000000000000000"
-"0000000000000000";
+int freq[256] = {0};
 int read_byte = 0;
 int write_byte = 0;
+
 
 struct cryptomod_data {
     char *buffer;
     size_t size;
-	size_t pad_size;
 	struct CryptoSetup setup;
+    bool finalize;
 }; 
-// u8 u8_key = 0x01;
-// u8 *aes_key = &u8_key;
-// size_t key_len = 16;
 
-// uint8_t *aes_key = (uint8_t[]) {0x12, 0x34, 0x56, 0x78, 
-// 	0x9A, 0xBC, 0xDE, 0xF0, 
-// 	0x11, 0x22, 0x33, 0x44, 
-// 	0x55, 0x66, 0x77, 0x88};
-
-void pkcs7_pad(char *buffer, int length, int block_size) {
+int pkcs7_pad(char *buffer, int length, int block_size) {
 	int padding_length = block_size - (length % block_size);
+    if (padding_length == 0) {
+        padding_length = block_size;
+    }
 	for (int i = 0; i < padding_length; i++) {
 		buffer[length + i] = padding_length; // Add padding value
 	}
+    return padding_length;
 }
 	
-static int test_skcipher(u8 *key, size_t key_len, u8 *data, size_t datasize, int enc)
+static int test_skcipher(u8 *key, size_t key_len, u8 *data, size_t datasize, int mode)
 {
     struct crypto_skcipher *tfm = NULL;
     struct skcipher_request *req = NULL;
@@ -100,7 +81,7 @@ static int test_skcipher(u8 *key, size_t key_len, u8 *data, size_t datasize, int
     skcipher_request_set_callback(req, CRYPTO_TFM_REQ_MAY_BACKLOG | CRYPTO_TFM_REQ_MAY_SLEEP, crypto_req_done, &wait);
     skcipher_request_set_crypt(req, &sg, &sg, datasize, NULL);
 
-    if (enc) {
+    if (mode == ENC) {
         printk(KERN_INFO "test_skcipher: Encrypting data\n");
         err = crypto_wait_req(crypto_skcipher_encrypt(req), &wait);
     } else {
@@ -130,6 +111,15 @@ static int hellomod_dev_open(struct inode *i, struct file *f) {
     if (!data)
         return -ENOMEM;
 
+    // Allocate buffer with fixed size
+    data->buffer = kmalloc(BUFFER_SIZE, GFP_KERNEL);
+    if (!data->buffer) {
+        kfree(data);
+        return -ENOMEM;
+    }
+    data->size = 0; // Initialize size to 0
+    data->finalize = false;
+
     f->private_data = data; // 綁定到這個 file 結構
     printk(KERN_INFO "hellomod: device opened.\n");
     return 0;
@@ -149,51 +139,26 @@ static int hellomod_dev_close(struct inode *i, struct file *f) {
 static ssize_t hellomod_dev_write(struct file *f, const char __user *buf, size_t len, loff_t *off) {
 	struct cryptomod_data *data = f->private_data;
     if (!data) return -EINVAL;
-	data->size = len;
-
+    if (data->finalize) {
+        return -EINVAL;
+    }
     printk(KERN_INFO "hellomod: write %zu bytes @ %llu.\n", len, *off);
-	// 釋放舊 buffer
-    if(data->buffer){
-        kfree(data->buffer);
-	}
-	printk(KERN_INFO "free data buffer success");
-    // 分配新 buffer
-    data->buffer = kmalloc(len, GFP_KERNEL);
-    if (!data->buffer){
+
+
+    // Check if there is enough space in the buffer
+    if (data->size + len > BUFFER_SIZE) {
+        printk(KERN_ERR "hellomod: buffer overflow.\n");
         return -ENOMEM;
-	}
-	printk(KERN_INFO "allocate buffer success");
-    // 從 user space 複製資料到 kernel buffer
-    if (copy_from_user(data->buffer, buf, len)) {
-        kfree(data->buffer);
+    }
+
+    // Copy data from user space to kernel buffer
+    if (copy_from_user(data->buffer + data->size, buf, len)) {
         return -EFAULT;
     }
 
-	// Add padding
-	pkcs7_pad(data->buffer, len, CM_BLOCK_SIZE);
-	// Print debug
-	// printk(KERN_INFO "User buffer contents: ");
-    // for (size_t i = 0; i < 16; i++) {
-    //     printk(KERN_CONT "%c", data->buffer[i]); // Print each byte as hex
-    // }
-    // printk(KERN_CONT "\n");
-	data->pad_size = 16;
-
-	// 執行 AES 加密
-	int key_len = data->setup.key_len;
-	char aes_key[CM_KEY_MAX_LEN];
-	memcpy(aes_key, data->setup.key, CM_KEY_MAX_LEN);
-	// TODO 16 need change
-    if (test_skcipher((u8 *)&aes_key, key_len, data->buffer, data->pad_size, 1)) {
-		printk(KERN_INFO "crypto_error");
-        kfree(data->buffer);
-        return -EINVAL;
-    }
-
-	for (size_t i = 0; i < len; i++) {
-        printk(KERN_CONT "%c", data->buffer[i]); // Print each byte as hex
-    }
-    printk(KERN_CONT "\n");
+    data->size += len;
+    *off += len;
+    write_byte += len;
     return len;
 }
 
@@ -204,29 +169,27 @@ static ssize_t hellomod_dev_read(struct file *f, char __user *buf, size_t len, l
 
     printk(KERN_INFO "hellomod: read %zu bytes @ %llu.\n", len, *off);
 
-    // 分配暫存 buffer 來存放解密結果
-    char *temp_buffer = kmalloc(data->pad_size, GFP_KERNEL);
-    if (!temp_buffer) return -ENOMEM;
-
-    memcpy(temp_buffer, data->buffer, data->pad_size);
-
-    // 執行 AES 解密
-	int key_len = data->setup.key_len;
-	char aes_key[CM_KEY_MAX_LEN];
-	memcpy(aes_key, data->setup.key, CM_KEY_MAX_LEN);
-    if (test_skcipher(aes_key, key_len, temp_buffer, data->pad_size, 0)) {
-        kfree(temp_buffer);
-        return -EINVAL;
-    }
-
+    // If we've already read everything
+    if (*off >= data->size)
+        return 0;
+    size_t available = data->size - *off;
+    size_t read_len = min(available, len);
     // 把解密後的資料送回 user-space
-    if (copy_to_user(buf, temp_buffer, data->pad_size)) {
-        kfree(temp_buffer);
+    if (copy_to_user(buf, data->buffer + *off, read_len)) {
         return -EFAULT;
     }
 
-    kfree(temp_buffer);
-    return data->size;
+    if (data->setup.c_mode == ENC) {
+        // Count frequency
+        for (size_t i = 0; i < read_len; i++) {
+            unsigned char byte = data->buffer[*off + i];
+            freq[byte]++;
+        }
+    }
+    *off += read_len;
+    // Read byte update
+    read_byte += read_len;
+    return read_len;
 }
 
 static long hellomod_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long arg) {
@@ -242,14 +205,70 @@ static long hellomod_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long 
             break;
 
         case CM_IOC_FINALIZE:
+            if(data->setup.c_mode == ENC) {
+                printk(KERN_INFO "hellomod: ioctl FINALIZE - ENCRYPT start\n");
+                // Add padding
+                int pad_size = pkcs7_pad(data->buffer, data->size, CM_BLOCK_SIZE);
+                data->size += pad_size;
+
+                // 執行 AES 加密
+                int key_len = data->setup.key_len;
+                char aes_key[CM_KEY_MAX_LEN];
+                memcpy(aes_key, data->setup.key, CM_KEY_MAX_LEN);
+                // TODO 16 need change
+                if (test_skcipher((u8 *)&aes_key, key_len, data->buffer, data->size, ENC)) {
+                    printk(KERN_INFO "crypto_error");
+                    kfree(data->buffer);
+                    return -EINVAL;
+                }
+                printk(KERN_INFO "hellomod: ioctl FINALIZE - ENCRYPT done\n");
+            } else if(data->setup.c_mode == DEC) {
+                // Check end byte for padding
+                int pad_size = data->buffer[data->size - 1];
+                // Check if last byte chars are all equal last byte
+                for (int i = 1; i <= pad_size; i++) {
+                    if (data->buffer[data->size - i] != pad_size) {
+                        printk(KERN_ERR "hellomod: padding error.\n");
+                        return -EINVAL;
+                    }
+                }
+                // 執行 AES 解密
+                int key_len = data->setup.key_len;
+                char aes_key[CM_KEY_MAX_LEN];
+                memcpy(aes_key, data->setup.key, CM_KEY_MAX_LEN);
+                if (test_skcipher(aes_key, key_len, data->buffer, data->size, DEC)) {
+                    kfree(data->buffer);
+                    return -EINVAL;
+                }
+                printk(KERN_INFO "hellomod: ioctl FINALIZE - DECRYPT\n");
+            } else {
+                return -EINVAL;
+            }
+            data->finalize = true;
+            fp->f_pos = 0;
             printk(KERN_INFO "hellomod: ioctl FINALIZE\n");
             break;
 
         case CM_IOC_CLEANUP:
+            data->size = 0;
+            data->finalize = false;
+            kfree(data->buffer); // Free
+            data->buffer = kmalloc(BUFFER_SIZE, GFP_KERNEL);
+            if (!data->buffer) {
+                return -ENOMEM;
+            }
             printk(KERN_INFO "hellomod: ioctl CLEANUP\n");
             break;
 
         case CM_IOC_CNT_RST:
+            write_byte = 0;
+            read_byte = 0;
+            for (int i = 0; i < 256; i++) {
+                freq[i] = 0;
+            }
+            data->size = 0;
+            data->finalize = false;
+            kfree(data->buffer); // Free
             printk(KERN_INFO "hellomod: ioctl COUNT RESET\n");
             break;
 
@@ -270,9 +289,9 @@ static const struct file_operations hellomod_dev_fops = {
 
 static int hellomod_proc_read(struct seq_file *m, void *v) {
 	// char buf[] = "`hello, world!` in /proc.\n";
-	seq_printf(m, "%s", "0 0\n");
+	seq_printf(m, "%d %d\n", read_byte, write_byte);
 	for (int i = 0; i < 16 * 16; i++) {
-        seq_printf(m, "%c ", freq[i]);
+        seq_printf(m, "%d ", freq[i]);
         if ((i + 1) % 16 == 0) // New line after every 16 elements
 			seq_printf(m, "\n");
     }

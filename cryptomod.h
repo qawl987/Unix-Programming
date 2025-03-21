@@ -5,16 +5,16 @@
 #define CM_BLOCK_SIZE 16
 
 // ENC: encryption, DEC: decryption
-enum CryptoMode { ENC, DEC };
+typedef enum { ENC, DEC } CryptoMode;
 // BASIC: basic I/O mode, ADV: advanced I/O mode
-enum IOMode { BASIC, ADV };
+typedef enum { BASIC, ADV } IOMode;
 
 struct CryptoSetup {
     char key[CM_KEY_MAX_LEN];
     // valid key length are 16, 24, 32
     int key_len;
-    enum IOMode io_mode;
-    enum CryptoMode c_mode;
+    IOMode io_mode;
+    CryptoMode c_mode;
 };
 
 // ioctl command
