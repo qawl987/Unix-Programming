@@ -33,7 +33,7 @@ int write_byte = 0;
 struct cryptomod_data {
     char *buffer;
     size_t size;
-    size_t encrypt_len;
+    size_t process_len;
 	struct CryptoSetup setup;
     bool finalize;
 }; 
@@ -113,7 +113,7 @@ static int hellomod_dev_open(struct inode *i, struct file *f) {
         return -ENOMEM;
     }
     data->size = 0; // Initialize size to 0
-    data->encrypt_len = 0;
+    data->process_len = 0;
     data->finalize = false;
 
     f->private_data = data; // 綁定到這個 file 結構
@@ -152,19 +152,20 @@ static ssize_t hellomod_dev_write(struct file *f, const char __user *buf, size_t
                 // Count Encrypted byte
                 // Print all varibale below debug
                 size_t remain = data->size % CM_BLOCK_SIZE;
-                size_t encrypt_len = data->size - remain - data->encrypt_len;
-                test_skcipher(data->setup.key, data->setup.key_len, data->buffer + data->encrypt_len, encrypt_len, ENC);
-                write_byte += encrypt_len;
-                data->encrypt_len += encrypt_len;
-                return encrypt_len;
+                size_t process_len = data->size - remain - data->process_len;
+                test_skcipher(data->setup.key, data->setup.key_len, data->buffer + data->process_len, process_len, ENC);
+                write_byte += process_len;
+                data->process_len += process_len;
+                return process_len;
             }
         }
         else if (data->setup.c_mode == DEC) {
             if (data->size > CM_BLOCK_SIZE) {
-                // Count Decrypted byte (data->size over CM_BLOCK_SIZE)
+                // Count Decrypted byte (data->size over CM_BLOCK_SIZE), reserve at least 16 bytes
                 size_t decrypt_len = data->size / CM_BLOCK_SIZE * CM_BLOCK_SIZE;
                 test_skcipher(data->setup.key, data->setup.key_len, data->buffer, decrypt_len, DEC);
                 write_byte += decrypt_len;
+                data->process_len += decrypt_len;
                 return decrypt_len;
             }
         }
@@ -217,7 +218,7 @@ static ssize_t hellomod_dev_read(struct file *f, char __user *buf, size_t len, l
             // memmove(dest, src, size)
             memmove(data->buffer, data->buffer + read_len, data->size - read_len);
             data->size -= read_len;
-            data->encrypt_len -= read_len;
+            data->process_len -= read_len;
             read_byte += read_len;
             return read_len;
         }
@@ -272,12 +273,12 @@ static long hellomod_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long 
                     int padding_length = pkcs7_pad(data->buffer, data->size, CM_BLOCK_SIZE);
                     data->size += padding_length;
                     // Encrypt range from *off(last encrptyed) to padding
-                    size_t encrypt_len = data->size - data->encrypt_len;
-                    test_skcipher(data->setup.key, data->setup.key_len, data->buffer + data->encrypt_len, encrypt_len, ENC);
+                    size_t process_len = data->size - data->process_len;
+                    test_skcipher(data->setup.key, data->setup.key_len, data->buffer + data->process_len, process_len, ENC);
                     // write_byte don't include padding but user data
-                    write_byte += encrypt_len;
+                    write_byte += process_len;
                     write_byte -= padding_length;
-                    data->encrypt_len += encrypt_len;
+                    data->process_len += process_len;
                 } else if (data->setup.c_mode == DEC) {
                     // Count Decrypted byte (data->size over CM_BLOCK_SIZE)
                     size_t decrypt_len = data->size / CM_BLOCK_SIZE * CM_BLOCK_SIZE;
@@ -334,7 +335,7 @@ static long hellomod_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long 
 
         case CM_IOC_CLEANUP:
             data->size = 0;
-            data->encrypt_len = 0;
+            data->process_len = 0;
             data->finalize = false;
             kfree(data->buffer); // Free
             data->buffer = kmalloc(BUFFER_SIZE, GFP_KERNEL);
@@ -351,7 +352,7 @@ static long hellomod_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long 
                 freq[i] = 0;
             }
             data->size = 0;
-            data->encrypt_len = 0;
+            data->process_len = 0;
             data->finalize = false;
             kfree(data->buffer); // Free
             data->buffer = kmalloc(BUFFER_SIZE, GFP_KERNEL);
