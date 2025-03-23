@@ -104,7 +104,7 @@ out:
 static int hellomod_dev_open(struct inode *i, struct file *f) {
 	struct cryptomod_data *data;
 
-    // 分配一個 private_data 給這個開啟的檔案
+    // allocate private_data to data
     data = kzalloc(sizeof(struct cryptomod_data), GFP_KERNEL);
     if (!data)
         return -ENOMEM;
@@ -119,7 +119,7 @@ static int hellomod_dev_open(struct inode *i, struct file *f) {
     data->process_len = 0;
     data->finalize = false;
 
-    f->private_data = data; // 綁定到這個 file 結構
+    f->private_data = data; // bind to private_data
     printk(KERN_INFO "device opened.\n");
     return 0;
 }
@@ -145,13 +145,13 @@ static ssize_t hellomod_dev_write(struct file *f, const char __user *buf, size_t
             return -EFAULT;
         }
         data->size += len;
-        // offset: current already encrypted/decrypted byte
+        // data->process_len: total byte processed
         // data->size: total byte
         if (data->setup.c_mode == ENC) {
             // Check if len plus data->size is larger than CM_BLOCK_SIZE(16)
             if (data->size >= CM_BLOCK_SIZE) {
                 // Count Encrypted byte
-                // Print all varibale below debug
+                // | process_len | nonprocess_user_data | remain |
                 size_t remain = data->size % CM_BLOCK_SIZE;
                 size_t process_len = data->size - remain - data->process_len;
                 test_skcipher(data->setup.key, data->setup.key_len, data->buffer + data->process_len, process_len, ENC);
@@ -163,6 +163,10 @@ static ssize_t hellomod_dev_write(struct file *f, const char __user *buf, size_t
         else if (data->setup.c_mode == DEC) {
             if (data->size > CM_BLOCK_SIZE) {
                 // Count Decrypted byte (data->size over CM_BLOCK_SIZE), reserve at least 16 bytes
+                // data->size % CM_BLOCK_SIZE == 0
+                // | process_len | nonprocess_user_data | 16 |
+                // data->size % CM_BLOCK_SIZE != 0
+                // | process_len | nonprocess_user_data | remain |
                 size_t valid_size = data->size % CM_BLOCK_SIZE == 0 ? data->size - CM_BLOCK_SIZE : data->size - (data->size % CM_BLOCK_SIZE);
                 size_t decrypt_len = valid_size - data->process_len;
                 test_skcipher(data->setup.key, data->setup.key_len, data->buffer + data->process_len, decrypt_len, DEC);
@@ -208,6 +212,7 @@ static ssize_t hellomod_dev_read(struct file *f, char __user *buf, size_t len, l
                 return -EAGAIN;
             }
             // Count Encrypted byte
+            // | process_len | remain |
             size_t available = data->size - (data->size % CM_BLOCK_SIZE);
             size_t read_len = min(available, len);
             if (copy_to_user(buf, data->buffer, read_len)) {
@@ -233,6 +238,7 @@ static ssize_t hellomod_dev_read(struct file *f, char __user *buf, size_t len, l
                 return -EAGAIN;
             }
             // Count Encrypted byte
+            // | process_len |
             size_t read_len = min(data->process_len, len);
             if (copy_to_user(buf, data->buffer, read_len)) {
                 return -EFAULT;
@@ -333,13 +339,11 @@ static long hellomod_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long 
                     int pad_size = pkcs7_pad(data->buffer, data->size, CM_BLOCK_SIZE);
                     data->size += pad_size;
     
-                    // 執行 AES 加密
                     if (test_skcipher(data->setup.key, data->setup.key_len, data->buffer, data->size, ENC)) {
                         kfree(data->buffer);
                         return -EINVAL;
                     }
                 } else if(data->setup.c_mode == DEC) {
-                    // 執行 AES 解密
                     if (test_skcipher(data->setup.key, data->setup.key_len, data->buffer, data->size, DEC)) {
                         kfree(data->buffer);
                         return -EINVAL;
@@ -410,7 +414,6 @@ static const struct file_operations hellomod_dev_fops = {
 };
 
 static int hellomod_proc_read(struct seq_file *m, void *v) {
-	// char buf[] = "`hello, world!` in /proc.\n";
 	seq_printf(m, "%d %d\n", atomic_read(&read_byte), atomic_read(&write_byte));
     mutex_lock(&freq_lock);
 	for (int i = 0; i < 16 * 16; i++) {
