@@ -145,18 +145,6 @@ static ssize_t hellomod_dev_write(struct file *f, const char __user *buf, size_t
             return -EFAULT;
         }
         data->size += len;
-<<<<<<< HEAD:hellomod.c
-        atomic_add(len, &write_byte);
-        // offset: current already encrypted/decrypted byte
-        // data->size: total byte
-        if (data->setup.c_mode == ENC) {
-            // Check if len plus data->size is larger than CM_BLOCK_SIZE(16)
-            // Count Encrypted byte
-            size_t encrypt_len = (int)((data->size - data->process_len) / CM_BLOCK_SIZE) * CM_BLOCK_SIZE;
-            if (encrypt_len) {
-                test_skcipher(data->setup.key, data->setup.key_len, data->buffer + data->process_len, encrypt_len, ENC);
-                data->process_len += encrypt_len;
-=======
         // data->process_len: total byte processed
         // data->size: total byte
         if (data->setup.c_mode == ENC) {
@@ -170,17 +158,9 @@ static ssize_t hellomod_dev_write(struct file *f, const char __user *buf, size_t
                 atomic_add(len, &write_byte);
                 data->process_len += process_len;
                 return len;
->>>>>>> feat/lab2:lab2/hellomod.c
             }
-            return len;
         }
         else if (data->setup.c_mode == DEC) {
-<<<<<<< HEAD:hellomod.c
-            // Count Decrypted byte (data->size over CM_BLOCK_SIZE), reserve at least 16 bytes
-            size_t valid_size = data->size % CM_BLOCK_SIZE == 0 ? data->size - CM_BLOCK_SIZE : data->size - (data->size % CM_BLOCK_SIZE);
-            size_t decrypt_len = valid_size - data->process_len;
-            if (decrypt_len) {
-=======
             if (data->size > CM_BLOCK_SIZE) {
                 // Count Decrypted byte (data->size over CM_BLOCK_SIZE), reserve at least 16 bytes
                 // data->size % CM_BLOCK_SIZE == 0
@@ -189,12 +169,12 @@ static ssize_t hellomod_dev_write(struct file *f, const char __user *buf, size_t
                 // | process_len | nonprocess_user_data | remain |
                 size_t valid_size = data->size % CM_BLOCK_SIZE == 0 ? data->size - CM_BLOCK_SIZE : data->size - (data->size % CM_BLOCK_SIZE);
                 size_t decrypt_len = valid_size - data->process_len;
->>>>>>> feat/lab2:lab2/hellomod.c
                 test_skcipher(data->setup.key, data->setup.key_len, data->buffer + data->process_len, decrypt_len, DEC);
+                atomic_add(len, &write_byte);
                 data->process_len += decrypt_len;
+                printk(KERN_INFO "After ADV mode write, len: %zu, data->size: %zu, process_len:%zu, decrypt_len:%zu\n", len, data->size, data->process_len, decrypt_len);
+                return len;
             }
-            // printk(KERN_INFO "After ADV mode write, len: %zu, data->size: %zu, process_len:%zu, decrypt_len:%zu\n", len, data->size, data->process_len, decrypt_len);
-            return len;
         }
     }
     else {
@@ -219,7 +199,7 @@ static ssize_t hellomod_dev_write(struct file *f, const char __user *buf, size_t
 
 static ssize_t hellomod_dev_read(struct file *f, char __user *buf, size_t len, loff_t *off) {
 	struct cryptomod_data *data = f->private_data;
-    if (!data || !data->setup.key_len) 
+    if (!data || data->setup.key_len == 0) 
         return -EINVAL;
     // If no data to read
     if (!data || !data->buffer || data->size == 0)
@@ -228,22 +208,13 @@ static ssize_t hellomod_dev_read(struct file *f, char __user *buf, size_t len, l
 
     if (data->setup.io_mode == ADV) {
         if (data->setup.c_mode == ENC) {
-            // Count Encrypted byte
-<<<<<<< HEAD:hellomod.c
-            size_t read_len = min(data->process_len, len);
-            read_len -= read_len % CM_BLOCK_SIZE;
-            if (!read_len)
-            {
-                if (data->finalize)
-                    return 0;
-                else
-                    return -EAGAIN;
+            if (len < CM_BLOCK_SIZE) {
+                return -EAGAIN;
             }
-=======
+            // Count Encrypted byte
             // | process_len | remain |
             size_t available = data->size - (data->size % CM_BLOCK_SIZE);
             size_t read_len = min(available, len);
->>>>>>> feat/lab2:lab2/hellomod.c
             if (copy_to_user(buf, data->buffer, read_len)) {
                 return -EFAULT;
             }
@@ -263,17 +234,12 @@ static ssize_t hellomod_dev_read(struct file *f, char __user *buf, size_t len, l
             return read_len;
         }
         else if (data->setup.c_mode == DEC) {
+            if (len < CM_BLOCK_SIZE) {
+                return -EAGAIN;
+            }
             // Count Encrypted byte
             // | process_len |
             size_t read_len = min(data->process_len, len);
-            read_len -= read_len % CM_BLOCK_SIZE;
-            if (!read_len)
-            {
-                if (data->finalize)
-                    return 0;
-                else
-                    return -EAGAIN;
-            }
             if (copy_to_user(buf, data->buffer, read_len)) {
                 return -EFAULT;
             }
@@ -285,6 +251,7 @@ static ssize_t hellomod_dev_read(struct file *f, char __user *buf, size_t len, l
             atomic_add(read_len, &read_byte);
             return read_len;
         }
+        return len;
     }
     // If we've already read everything
     if (*off >= data->size)
@@ -324,7 +291,7 @@ static long hellomod_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long 
                 return -EINVAL;
             if (data->setup.c_mode != ENC && data->setup.c_mode != DEC)
                 return -EINVAL;
-            printk(KERN_EMERG "ioctl SETUP - key_len: %d, io_mode: %d, c_mode: %d\n",
+            printk(KERN_INFO "ioctl SETUP - key_len: %d, io_mode: %d, c_mode: %d\n",
                    data->setup.key_len, data->setup.io_mode, data->setup.c_mode);
             break;
 
@@ -342,13 +309,11 @@ static long hellomod_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long 
                     data->process_len += process_len;
                 } else if (data->setup.c_mode == DEC) {
                     // print data->size and data->process_len
-                    // printk(KERN_INFO "data->size: %zu, data->process_len: %zu\n", data->size, data->process_len);
+                    printk(KERN_INFO "data->size: %zu, data->process_len: %zu\n", data->size, data->process_len);
                     // Count Decrypted byte (data->size over CM_BLOCK_SIZE)
-                    // if ((data->size - data->process_len) % CM_BLOCK_SIZE != 0) {
-                    //     return 0;
-                    // }
-                    if (data->size % CM_BLOCK_SIZE != 0)
-                        return -EINVAL;
+                    if ((data->size - data->process_len) % CM_BLOCK_SIZE != 0) {
+                        return 0;
+                    }
                     test_skcipher(data->setup.key, data->setup.key_len, data->buffer, data->size - data->process_len, DEC);
                     // Check end byte for padding
                     int pad_size = data->buffer[data->size - 1];
@@ -361,9 +326,8 @@ static long hellomod_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long 
                     // Remove padding
                     data->size -= pad_size;
                     // atomic_add(data->size - data->process_len, &read_byte);
-                    data->process_len = data->size;
-                    memset(data->buffer + data->size, '\0', pad_size);
-                    // printk(KERN_INFO "ioctl FINALIZE - DECRYPT\n");
+                    data->process_len += data->size - data->process_len;
+                    printk(KERN_INFO "ioctl FINALIZE - DECRYPT\n");
                 } else {
                     return -EINVAL;
                 }
@@ -423,6 +387,14 @@ static long hellomod_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long 
                 freq[i] = 0;
             }
             mutex_unlock(&freq_lock);
+            data->size = 0;
+            data->process_len = 0;
+            data->finalize = false;
+            kfree(data->buffer); // Free
+            data->buffer = kmalloc(BUFFER_SIZE, GFP_KERNEL);
+            if (!data->buffer) {
+                return -ENOMEM;
+            }
             printk(KERN_INFO "ioctl COUNT RESET\n");
             break;
 
