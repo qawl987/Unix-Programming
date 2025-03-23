@@ -21,7 +21,7 @@
 #include <linux/printk.h>
 #include <crypto/skcipher.h>
 #include <linux/scatterlist.h>
-#define BUFFER_SIZE 2048
+#define BUFFER_SIZE 16384
 static dev_t devnum;
 static struct cdev c_dev;
 static struct class *clazz;
