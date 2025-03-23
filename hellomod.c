@@ -157,26 +157,21 @@ static ssize_t hellomod_dev_write(struct file *f, const char __user *buf, size_t
                 size_t remain = data->size % CM_BLOCK_SIZE;
                 size_t process_len = data->size - remain - data->process_len;
                 test_skcipher(data->setup.key, data->setup.key_len, data->buffer + data->process_len, process_len, ENC);
-                write_byte += process_len;
+                write_byte += len;
                 data->process_len += process_len;
-                return process_len;
+                return len;
             }
         }
         else if (data->setup.c_mode == DEC) {
             if (data->size > CM_BLOCK_SIZE) {
                 // Count Decrypted byte (data->size over CM_BLOCK_SIZE), reserve at least 16 bytes
-                size_t nprocess_len = data->size - data->process_len;
-                size_t decrypt_len = (nprocess_len - CM_BLOCK_SIZE) / CM_BLOCK_SIZE * CM_BLOCK_SIZE;
-                size_t preserved_len = nprocess_len - decrypt_len;
-                if (preserved_len < CM_BLOCK_SIZE) {
-                    decrypt_len -= CM_BLOCK_SIZE;
-                    preserved_len += CM_BLOCK_SIZE;
-                }
+                size_t valid_size = data->size % CM_BLOCK_SIZE == 0 ? data->size - CM_BLOCK_SIZE : data->size - (data->size % CM_BLOCK_SIZE);
+                size_t decrypt_len = valid_size - data->process_len;
                 test_skcipher(data->setup.key, data->setup.key_len, data->buffer + data->process_len, decrypt_len, DEC);
-                write_byte += decrypt_len;
+                write_byte += len;
                 data->process_len += decrypt_len;
                 printk(KERN_INFO "After ADV mode write, len: %zu, data->size: %zu, process_len:%zu, decrypt_len:%zu\n", len, data->size, data->process_len, decrypt_len);
-                return decrypt_len;
+                return len;
             }
         }
     }
