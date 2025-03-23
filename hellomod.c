@@ -26,9 +26,9 @@ static dev_t devnum;
 static struct cdev c_dev;
 static struct class *clazz;
 int freq[256] = {0};
-int read_byte = 0;
-int write_byte = 0;
-
+static atomic_t read_byte = ATOMIC_INIT(0);
+static atomic_t write_byte = ATOMIC_INIT(0);
+static DEFINE_MUTEX(freq_lock);
 
 struct cryptomod_data {
     char *buffer;
@@ -155,7 +155,7 @@ static ssize_t hellomod_dev_write(struct file *f, const char __user *buf, size_t
                 size_t remain = data->size % CM_BLOCK_SIZE;
                 size_t process_len = data->size - remain - data->process_len;
                 test_skcipher(data->setup.key, data->setup.key_len, data->buffer + data->process_len, process_len, ENC);
-                write_byte += len;
+                atomic_add(len, &write_byte);
                 data->process_len += process_len;
                 return len;
             }
@@ -166,7 +166,7 @@ static ssize_t hellomod_dev_write(struct file *f, const char __user *buf, size_t
                 size_t valid_size = data->size % CM_BLOCK_SIZE == 0 ? data->size - CM_BLOCK_SIZE : data->size - (data->size % CM_BLOCK_SIZE);
                 size_t decrypt_len = valid_size - data->process_len;
                 test_skcipher(data->setup.key, data->setup.key_len, data->buffer + data->process_len, decrypt_len, DEC);
-                write_byte += len;
+                atomic_add(len, &write_byte);
                 data->process_len += decrypt_len;
                 printk(KERN_INFO "After ADV mode write, len: %zu, data->size: %zu, process_len:%zu, decrypt_len:%zu\n", len, data->size, data->process_len, decrypt_len);
                 return len;
@@ -187,7 +187,7 @@ static ssize_t hellomod_dev_write(struct file *f, const char __user *buf, size_t
 
         data->size += len;
         *off += len;
-        write_byte += len;
+        atomic_add(len, &write_byte);
         return len;
     }
     return -EINVAL;
@@ -195,9 +195,9 @@ static ssize_t hellomod_dev_write(struct file *f, const char __user *buf, size_t
 
 static ssize_t hellomod_dev_read(struct file *f, char __user *buf, size_t len, loff_t *off) {
 	struct cryptomod_data *data = f->private_data;
-    // 沒有資料可if讀
-    if (data->setup.key_len == 0)
+    if (!data || data->setup.key_len == 0) 
         return -EINVAL;
+    // If no data to read
     if (!data || !data->buffer || data->size == 0)
         return 0;
     printk(KERN_INFO "read %zu bytes @ %llu.\n", len, *off);
@@ -213,18 +213,19 @@ static ssize_t hellomod_dev_read(struct file *f, char __user *buf, size_t len, l
             if (copy_to_user(buf, data->buffer, read_len)) {
                 return -EFAULT;
             }
-            
+            mutex_lock(&freq_lock);
             // Count frequency
             for (size_t i = 0; i < read_len; i++) {
                 unsigned char byte = data->buffer[i];
                 freq[byte]++;
             }
+            mutex_unlock(&freq_lock);
             // Move remain data to the front
             // memmove(dest, src, size)
             memmove(data->buffer, data->buffer + read_len, data->size - read_len);
             data->size -= read_len;
             data->process_len -= read_len;
-            read_byte += read_len;
+            atomic_add(read_len, &read_byte);
             return read_len;
         }
         else if (data->setup.c_mode == DEC) {
@@ -241,7 +242,7 @@ static ssize_t hellomod_dev_read(struct file *f, char __user *buf, size_t len, l
             memmove(data->buffer, data->buffer + read_len, data->size - read_len);
             data->size -= read_len;
             data->process_len -= read_len;
-            read_byte += read_len;
+            atomic_add(read_len, &read_byte);
             return read_len;
         }
         return len;
@@ -265,7 +266,7 @@ static ssize_t hellomod_dev_read(struct file *f, char __user *buf, size_t len, l
     }
     *off += read_len;
     // Read byte update
-    read_byte += read_len;
+    atomic_add(read_len, &read_byte);
     return read_len;
 }
 
@@ -298,8 +299,7 @@ static long hellomod_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long 
                     size_t process_len = data->size - data->process_len;
                     test_skcipher(data->setup.key, data->setup.key_len, data->buffer + data->process_len, process_len, ENC);
                     // write_byte don't include padding but user data
-                    write_byte += process_len;
-                    write_byte -= padding_length;
+                    atomic_add(process_len - padding_length, &write_byte);
                     data->process_len += process_len;
                 } else if (data->setup.c_mode == DEC) {
                     // print data->size and data->process_len
@@ -319,7 +319,7 @@ static long hellomod_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long 
                     }
                     // Remove padding
                     data->size -= pad_size;
-                    read_byte += data->size - data->process_len;
+                    // atomic_add(data->size - data->process_len, &read_byte);
                     data->process_len += data->size - data->process_len;
                     printk(KERN_INFO "ioctl FINALIZE - DECRYPT\n");
                 } else {
@@ -375,11 +375,14 @@ static long hellomod_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long 
             break;
 
         case CM_IOC_CNT_RST:
-            write_byte = 0;
-            read_byte = 0;
+            atomic_set(&write_byte, 0);
+            atomic_set(&read_byte, 0);
+
+            mutex_lock(&freq_lock);
             for (int i = 0; i < 256; i++) {
                 freq[i] = 0;
             }
+            mutex_unlock(&freq_lock);
             data->size = 0;
             data->process_len = 0;
             data->finalize = false;
@@ -408,12 +411,14 @@ static const struct file_operations hellomod_dev_fops = {
 
 static int hellomod_proc_read(struct seq_file *m, void *v) {
 	// char buf[] = "`hello, world!` in /proc.\n";
-	seq_printf(m, "%d %d\n", read_byte, write_byte);
+	seq_printf(m, "%d %d\n", atomic_read(&read_byte), atomic_read(&write_byte));
+    mutex_lock(&freq_lock);
 	for (int i = 0; i < 16 * 16; i++) {
         seq_printf(m, "%d ", freq[i]);
         if ((i + 1) % 16 == 0) // New line after every 16 elements
 			seq_printf(m, "\n");
     }
+    mutex_unlock(&freq_lock);
 	return 0;
 }
 
