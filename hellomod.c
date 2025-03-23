@@ -56,8 +56,11 @@ static int test_skcipher(u8 *key, size_t key_len, u8 *data, size_t datasize, int
     struct scatterlist sg;
     DECLARE_CRYPTO_WAIT(wait);
     int err;
-
-    printk(KERN_INFO "test_skcipher: Starting encryption/decryption. key_len: %zu, data_size: %zu.\n", key_len, datasize);
+    if (mode == ENC) {
+        printk(KERN_INFO "test_skcipher: Encrypting %zu bytes.\n", datasize);
+    } else {
+        printk(KERN_INFO "test_skcipher: Decrypting %zu bytes.\n", datasize);
+    }
 
     tfm = crypto_alloc_skcipher("ecb(aes)", 0, 0);
     if (IS_ERR(tfm)) {
@@ -139,7 +142,7 @@ static ssize_t hellomod_dev_write(struct file *f, const char __user *buf, size_t
         return -EINVAL;
     }
     if (data->setup.io_mode == ADV) {
-        printk(KERN_INFO "ADV mode write, len: %zu, data->size: %zu\n", len, data->size);
+        printk(KERN_INFO "ADV mode write, len: %zu, data->size: %zu, process_len:%zu\n", len, data->size, data->process_len);
         if (copy_from_user(data->buffer + data->size, buf, len)) {
             return -EFAULT;
         }
@@ -162,10 +165,17 @@ static ssize_t hellomod_dev_write(struct file *f, const char __user *buf, size_t
         else if (data->setup.c_mode == DEC) {
             if (data->size > CM_BLOCK_SIZE) {
                 // Count Decrypted byte (data->size over CM_BLOCK_SIZE), reserve at least 16 bytes
-                size_t decrypt_len = data->size / CM_BLOCK_SIZE * CM_BLOCK_SIZE;
-                test_skcipher(data->setup.key, data->setup.key_len, data->buffer, decrypt_len, DEC);
+                size_t nprocess_len = data->size - data->process_len;
+                size_t decrypt_len = (nprocess_len - CM_BLOCK_SIZE) / CM_BLOCK_SIZE * CM_BLOCK_SIZE;
+                size_t preserved_len = nprocess_len - decrypt_len;
+                if (preserved_len < CM_BLOCK_SIZE) {
+                    decrypt_len -= CM_BLOCK_SIZE;
+                    preserved_len += CM_BLOCK_SIZE;
+                }
+                test_skcipher(data->setup.key, data->setup.key_len, data->buffer + data->process_len, decrypt_len, DEC);
                 write_byte += decrypt_len;
                 data->process_len += decrypt_len;
+                printk(KERN_INFO "After ADV mode write, len: %zu, data->size: %zu, process_len:%zu, decrypt_len:%zu\n", len, data->size, data->process_len, decrypt_len);
                 return decrypt_len;
             }
         }
@@ -223,12 +233,21 @@ static ssize_t hellomod_dev_read(struct file *f, char __user *buf, size_t len, l
             return read_len;
         }
         else if (data->setup.c_mode == DEC) {
-            // Count Decrypted byte (data->size over CM_BLOCK_SIZE)
-            size_t decrypt_len = data->size / CM_BLOCK_SIZE * CM_BLOCK_SIZE;
-            if (data->size > CM_BLOCK_SIZE) {
-                test_skcipher(data->setup.key, data->setup.key_len, data->buffer, decrypt_len, DEC);
-                read_byte += decrypt_len;
+            if (len < CM_BLOCK_SIZE) {
+                return -EAGAIN;
             }
+            // Count Encrypted byte
+            size_t read_len = min(data->process_len, len);
+            if (copy_to_user(buf, data->buffer, read_len)) {
+                return -EFAULT;
+            }
+            // Move remain data to the front
+            // memmove(dest, src, size)
+            memmove(data->buffer, data->buffer + read_len, data->size - read_len);
+            data->size -= read_len;
+            data->process_len -= read_len;
+            read_byte += read_len;
+            return read_len;
         }
         return len;
     }
@@ -280,12 +299,25 @@ static long hellomod_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long 
                     write_byte -= padding_length;
                     data->process_len += process_len;
                 } else if (data->setup.c_mode == DEC) {
+                    // print data->size and data->process_len
+                    printk(KERN_INFO "data->size: %zu, data->process_len: %zu\n", data->size, data->process_len);
                     // Count Decrypted byte (data->size over CM_BLOCK_SIZE)
-                    size_t decrypt_len = data->size / CM_BLOCK_SIZE * CM_BLOCK_SIZE;
-                    if (data->size > CM_BLOCK_SIZE) {
-                        test_skcipher(data->setup.key, data->setup.key_len, data->buffer, decrypt_len, DEC);
-                        read_byte += decrypt_len;
+                    if ((data->size - data->process_len) % CM_BLOCK_SIZE != 0) {
+                        return 0;
                     }
+                    test_skcipher(data->setup.key, data->setup.key_len, data->buffer, data->size - data->process_len, DEC);
+                    // Check end byte for padding
+                    int pad_size = data->buffer[data->size - 1];
+                    // Check if last byte chars are all equal last byte
+                    for (int i = 1; i <= pad_size; i++) {
+                        if (data->buffer[data->size - i] != pad_size) {
+                            return -EINVAL;
+                        }
+                    }
+                    // Remove padding
+                    data->size -= pad_size;
+                    read_byte += data->size - data->process_len;
+                    data->process_len += data->size - data->process_len;
                     printk(KERN_INFO "ioctl FINALIZE - DECRYPT\n");
                 } else {
                     return -EINVAL;
@@ -299,19 +331,13 @@ static long hellomod_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long 
                     data->size += pad_size;
     
                     // 執行 AES 加密
-                    int key_len = data->setup.key_len;
-                    char aes_key[CM_KEY_MAX_LEN];
-                    memcpy(aes_key, data->setup.key, CM_KEY_MAX_LEN);
-                    if (test_skcipher((u8 *)&aes_key, key_len, data->buffer, data->size, ENC)) {
+                    if (test_skcipher(data->setup.key, data->setup.key_len, data->buffer, data->size, ENC)) {
                         kfree(data->buffer);
                         return -EINVAL;
                     }
                 } else if(data->setup.c_mode == DEC) {
                     // 執行 AES 解密
-                    int key_len = data->setup.key_len;
-                    char aes_key[CM_KEY_MAX_LEN];
-                    memcpy(aes_key, data->setup.key, CM_KEY_MAX_LEN);
-                    if (test_skcipher(aes_key, key_len, data->buffer, data->size, DEC)) {
+                    if (test_skcipher(data->setup.key, data->setup.key_len, data->buffer, data->size, DEC)) {
                         kfree(data->buffer);
                         return -EINVAL;
                     }
