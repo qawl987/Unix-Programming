@@ -137,10 +137,8 @@ static int hellomod_dev_close(struct inode *i, struct file *f) {
 
 static ssize_t hellomod_dev_write(struct file *f, const char __user *buf, size_t len, loff_t *off) {
 	struct cryptomod_data *data = f->private_data;
-    if (!data) return -EINVAL;
-    if (data->finalize) {
+    if (!data || data->finalize || data->setup.key_len == 0) 
         return -EINVAL;
-    }
     if (data->setup.io_mode == ADV) {
         printk(KERN_INFO "ADV mode write, len: %zu, data->size: %zu, process_len:%zu\n", len, data->size, data->process_len);
         if (copy_from_user(data->buffer + data->size, buf, len)) {
@@ -198,6 +196,8 @@ static ssize_t hellomod_dev_write(struct file *f, const char __user *buf, size_t
 static ssize_t hellomod_dev_read(struct file *f, char __user *buf, size_t len, loff_t *off) {
 	struct cryptomod_data *data = f->private_data;
     // 沒有資料可if讀
+    if (data->setup.key_len == 0)
+        return -EINVAL;
     if (!data || !data->buffer || data->size == 0)
         return 0;
     printk(KERN_INFO "read %zu bytes @ %llu.\n", len, *off);
@@ -273,9 +273,17 @@ static long hellomod_dev_ioctl(struct file *fp, unsigned int cmd, unsigned long 
 	struct cryptomod_data *data = fp->private_data;
 	switch (cmd) {
         case CM_IOC_SETUP:
+            if (!(void __user *)arg)
+                return -EINVAL;
             if (copy_from_user(&data->setup, (struct CryptoSetup __user *)arg, sizeof(struct CryptoSetup))) {
-                return -EFAULT;
+                return -EBUSY;
             }
+            if (data->setup.key_len != 16 && data->setup.key_len != 24 && data->setup.key_len != 32)
+                return -EINVAL;
+            if (data->setup.io_mode != BASIC && data->setup.io_mode != ADV)
+                return -EINVAL;
+            if (data->setup.c_mode != ENC && data->setup.c_mode != DEC)
+                return -EINVAL;
             printk(KERN_INFO "ioctl SETUP - key_len: %d, io_mode: %d, c_mode: %d\n",
                    data->setup.key_len, data->setup.io_mode, data->setup.c_mode);
             break;
