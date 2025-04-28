@@ -242,6 +242,10 @@ static void disassemble_and_rewrite(char *code, size_t code_size, int mem_prot)
     assert(!mprotect(code, code_size, mem_prot));
 }
 
+#define STACK_SUFFIX "[stack]\n"
+#define VSYSCALL_SUFFIX "[vsyscall]\n"
+#define VDSO_SUFFIX "[vdso]\n"
+
 /* entry point for binary rewriting */
 static void rewrite_code(void)
 {
@@ -252,8 +256,22 @@ static void rewrite_code(void)
         char buf[4096];
         while (fgets(buf, sizeof(buf), fp) != NULL)
         {
-            /* we do not touch stack and vsyscall memory */
-            if (((strstr(buf, "[stack]\n") == NULL) && (strstr(buf, "[vsyscall]\n") == NULL) && (strstr(buf, "[vdso]\n") == NULL)))
+            int skip_line = 0;
+            char *last_space = strrchr(buf, ' ');
+
+            if (last_space != NULL)
+            {
+                char *suffix = last_space + 1;
+
+                // This block specifically checks for and skips the KERNEL's special regions
+                if (strcmp(suffix, STACK_SUFFIX) == 0 ||
+                    strcmp(suffix, VSYSCALL_SUFFIX) == 0 ||
+                    strcmp(suffix, VDSO_SUFFIX) == 0)
+                {
+                    skip_line = 1;
+                }
+            }
+            if (!skip_line)
             {
                 int i = 0;
                 char addr[65] = {0};
