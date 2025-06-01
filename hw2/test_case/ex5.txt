@@ -1,0 +1,10 @@
+load ./anon
+break 401828
+cont
+si
+break 0x700000000ffa
+cont
+si
+si
+si
+cont

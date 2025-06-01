@@ -1,0 +1,5 @@
+load ./hello
+si
+breakrva 1624
+syscall
+cont

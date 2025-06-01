@@ -1,0 +1,43 @@
+(sdb) ** program './anon' loaded. entry point: 0x401650.
+      401650: f3 0f 1e fa                   endbr64	
+      401654: 31 ed                         xor	ebp, ebp
+      401656: 49 89 d1                      mov	r9, rdx
+      401659: 5e                            pop	rsi
+      40165a: 48 89 e2                      mov	rdx, rsp
+(sdb) ** set a breakpoint at 0x401828.
+(sdb) ** hit a breakpoint at 0x401828.
+      401828: ff d2                         call	rdx
+      40182a: 48 8d 05 cf 38 0c 00          lea	rax, [rip + 0xc38cf]
+      401831: 48 89 c7                      mov	rdi, rax
+      401834: e8 37 ae 00 00                call	0x40c670
+      401839: b8 00 00 00 00                mov	eax, 0
+(sdb)       700000000000: 90                            nop	
+      700000000001: 90                            nop	
+      700000000002: 90                            nop	
+      700000000003: 90                            nop	
+      700000000004: 90                            nop	
+(sdb) ** set a breakpoint at 0x700000000ffa.
+(sdb) ** hit a breakpoint at 0x700000000ffa.
+      700000000ffa: 90                            nop	
+      700000000ffb: 90                            nop	
+      700000000ffc: 90                            nop	
+      700000000ffd: 90                            nop	
+      700000000ffe: 90                            nop	
+(sdb)       700000000ffb: 90                            nop	
+      700000000ffc: 90                            nop	
+      700000000ffd: 90                            nop	
+      700000000ffe: 90                            nop	
+      700000000fff: c3                            ret	
+(sdb)       700000000ffc: 90                            nop	
+      700000000ffd: 90                            nop	
+      700000000ffe: 90                            nop	
+      700000000fff: c3                            ret	
+** the address is out of the range of the executable region.
+(sdb)       700000000ffd: 90                            nop	
+      700000000ffe: 90                            nop	
+      700000000fff: c3                            ret	
+** the address is out of the range of the executable region.
+(sdb) Welcome to ANON TOKYO!
+
+** the target program terminated.
+(sdb) 

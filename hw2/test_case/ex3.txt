@@ -1,0 +1,11 @@
+load ./rana
+break 401798
+cont
+cont
+patch 40179e 7f
+info break
+delete 0
+patch deadbeef 1337
+break deadbeef
+breakrva deadbeef
+cont

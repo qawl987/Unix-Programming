@@ -1,0 +1,31 @@
+(sdb) ** program './hello' loaded. entry point: 0x401620.
+      401620: f3 0f 1e fa                   endbr64	
+      401624: 31 ed                         xor	ebp, ebp
+      401626: 49 89 d1                      mov	r9, rdx
+      401629: 5e                            pop	rsi
+      40162a: 48 89 e2                      mov	rdx, rsp
+(sdb) ** set a breakpoint at 0x401626.
+(sdb) ** set a breakpoint at 0x4017e6.
+(sdb) Num     Address
+0       0x401626
+1       0x4017e6
+(sdb)       401624: 31 ed                         xor	ebp, ebp
+      401626: 49 89 d1                      mov	r9, rdx
+      401629: 5e                            pop	rsi
+      40162a: 48 89 e2                      mov	rdx, rsp
+      40162d: 48 83 e4 f0                   and	rsp, 0xfffffffffffffff0
+(sdb) ** hit a breakpoint at 0x401626.
+      401626: 49 89 d1                      mov	r9, rdx
+      401629: 5e                            pop	rsi
+      40162a: 48 89 e2                      mov	rdx, rsp
+      40162d: 48 83 e4 f0                   and	rsp, 0xfffffffffffffff0
+      401631: 50                            push	rax
+(sdb) ** hit a breakpoint at 0x4017e6.
+      4017e6: e8 5a ff ff ff                call	0x401745
+      4017eb: bf 00 00 00 00                mov	edi, 0
+      4017f0: e8 84 ff ff ff                call	0x401779
+      4017f5: b8 00 00 00 00                mov	eax, 0
+      4017fa: 48 8b 55 f8                   mov	rdx, qword ptr [rbp - 8]
+(sdb) hello world!
+** the target program terminated.
+(sdb) 

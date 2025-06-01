@@ -1,0 +1,31 @@
+(sdb) ** program './rana' loaded. entry point: 0x401650.
+      401650: f3 0f 1e fa                   endbr64	
+      401654: 31 ed                         xor	ebp, ebp
+      401656: 49 89 d1                      mov	r9, rdx
+      401659: 5e                            pop	rsi
+      40165a: 48 89 e2                      mov	rdx, rsp
+(sdb) ** set a breakpoint at 0x401798.
+(sdb) ** hit a breakpoint at 0x401798.
+      401798: 8b 45 f8                      mov	eax, dword ptr [rbp - 8]
+      40179b: 3b 45 fc                      cmp	eax, dword ptr [rbp - 4]
+      40179e: 7e 11                         jle	0x4017b1
+      4017a0: 48 8d 05 5d 68 09 00          lea	rax, [rip + 0x9685d]
+      4017a7: 48 89 c7                      mov	rdi, rax
+(sdb) ** hit a breakpoint at 0x401798.
+      401798: 8b 45 f8                      mov	eax, dword ptr [rbp - 8]
+      40179b: 3b 45 fc                      cmp	eax, dword ptr [rbp - 4]
+      40179e: 7e 11                         jle	0x4017b1
+      4017a0: 48 8d 05 5d 68 09 00          lea	rax, [rip + 0x9685d]
+      4017a7: 48 89 c7                      mov	rdi, rax
+(sdb) ** patch memory at 0x40179e.
+(sdb) Num     Address
+0       0x401798
+(sdb) ** delete breakpoint 0.
+(sdb) ** the target address is not valid (cannot write for patch at 0xdeadbeef).
+(sdb) ** the target address is not valid (cannot read original byte).
+(sdb) ** the target address is not valid (cannot read original byte).
+(sdb) matcha parfait
+live!
+live!
+** the target program terminated.
+(sdb) 

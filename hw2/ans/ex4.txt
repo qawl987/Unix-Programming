@@ -1,0 +1,41 @@
+(sdb) ** program './hello' loaded. entry point: 0x401620.
+      401620: f3 0f 1e fa                   endbr64	
+      401624: 31 ed                         xor	ebp, ebp
+      401626: 49 89 d1                      mov	r9, rdx
+      401629: 5e                            pop	rsi
+      40162a: 48 89 e2                      mov	rdx, rsp
+(sdb) ** set a breakpoint at 0x40179f.
+(sdb) ** set a breakpoint at 0x4017b4.
+(sdb) ** hit a breakpoint at 0x40179f.
+      40179f: f3 0f 1e fa                   endbr64	
+      4017a3: 55                            push	rbp
+      4017a4: 48 89 e5                      mov	rbp, rsp
+      4017a7: 48 83 ec 20                   sub	rsp, 0x20
+      4017ab: 64 48 8b 04 25 28 00 00 00    mov	rax, qword ptr fs:[0x28]
+(sdb) ** hit a breakpoint at 0x4017b4.
+      4017b4: 48 89 45 f8                   mov	qword ptr [rbp - 8], rax
+      4017b8: 31 c0                         xor	eax, eax
+      4017ba: 48 b8 68 65 6c 6c 6f 20 77 6f movabs	rax, 0x6f77206f6c6c6568
+      4017c4: 48 89 45 ea                   mov	qword ptr [rbp - 0x16], rax
+      4017c8: c7 45 f2 72 6c 64 21          mov	dword ptr [rbp - 0xe], 0x21646c72
+(sdb) ** enter a syscall(1) at 0x447e4b.
+      447e4b: 0f 05                         syscall	
+      447e4d: 48 3d 01 f0 ff ff             cmp	rax, -0xfff
+      447e53: 73 01                         jae	0x447e56
+      447e55: c3                            ret	
+      447e56: 48 c7 c1 b8 ff ff ff          mov	rcx, -0x48
+(sdb) hello world!
+** leave a syscall(1) = 13 at 0x447e4b.
+      447e4b: 0f 05                         syscall	
+      447e4d: 48 3d 01 f0 ff ff             cmp	rax, -0xfff
+      447e53: 73 01                         jae	0x447e56
+      447e55: c3                            ret	
+      447e56: 48 c7 c1 b8 ff ff ff          mov	rcx, -0x48
+(sdb) ** enter a syscall(60) at 0x447e4b.
+      447e4b: 0f 05                         syscall	
+      447e4d: 48 3d 01 f0 ff ff             cmp	rax, -0xfff
+      447e53: 73 01                         jae	0x447e56
+      447e55: c3                            ret	
+      447e56: 48 c7 c1 b8 ff ff ff          mov	rcx, -0x48
+(sdb) ** the target program terminated.
+(sdb) 

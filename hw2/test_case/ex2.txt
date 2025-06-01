@@ -1,0 +1,8 @@
+load ./hello
+break 0x401626
+breakrva 17e6
+info break
+si
+si
+cont
+cont
