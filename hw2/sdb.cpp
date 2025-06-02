@@ -260,11 +260,18 @@ void Debugger::disassemble_and_print(unsigned long long rip, int count)
         return;
     }
 
-    load_memory_maps(); // Refresh maps for executable region checks primarily
+    load_memory_maps(); // Refresh maps
+
+    // Check rip
+    if (!is_address_in_executable_region(rip))
+    {
+        std::cout << "** the address is out of the range of the executable region." << std::endl;
+        return;
+    }
 
     std::vector<uint8_t> code_buffer;
-    const size_t max_instr_bytes = 15;                                             // Max length of an x86 instruction
-    const size_t buffer_prefetch_size = max_instr_bytes * count + max_instr_bytes; // Read enough for 'count' instructions
+    const size_t max_instr_bytes = 15;
+    const size_t buffer_prefetch_size = max_instr_bytes * count + max_instr_bytes;
     code_buffer.reserve(buffer_prefetch_size);
 
     for (size_t i = 0; i < buffer_prefetch_size; ++i)
@@ -278,11 +285,11 @@ void Debugger::disassemble_and_print(unsigned long long rip, int count)
         {
             const Breakpoint &bp = m_active_breakpoints.at(bp_id_iter->second);
             if (bp.user_enabled)
-            {                                // If it's a user-set breakpoint
-                byte_val = bp.original_byte; // Show the original byte
+            {
+                byte_val = bp.original_byte;
             }
             else
-            { // Breakpoint structure exists but not user_enabled (should be rare if pruned)
+            {
                 if (!read_memory_byte(current_addr_for_byte, byte_val))
                 {
                     break;
@@ -290,7 +297,7 @@ void Debugger::disassemble_and_print(unsigned long long rip, int count)
             }
         }
         else
-        { // Not a breakpoint, read directly from memory
+        {
             if (!read_memory_byte(current_addr_for_byte, byte_val))
             {
                 break;
@@ -299,31 +306,16 @@ void Debugger::disassemble_and_print(unsigned long long rip, int count)
         code_buffer.push_back(byte_val);
     }
 
-    if (code_buffer.empty() && !is_address_in_executable_region(rip))
+    cs_insn *insn = nullptr;
+    size_t disasm_instr_count = 0;
+    if (!code_buffer.empty())
     {
-        // This condition might be hit if read_memory_byte fails from the very start AND rip is not executable.
-        // If read_memory_byte fails for other reasons, code_buffer might be empty even if rip is executable.
-        std::cout << "** the address is out of the range of the executable region." << std::endl;
-        return;
+        disasm_instr_count = cs_disasm(m_capstone_handle, code_buffer.data(), code_buffer.size(), rip, 0, &insn);
     }
-    if (code_buffer.empty() && rip != 0)
-    { // rip != 0 to avoid message on initial load if something odd happens.
-        // This means reading even the first byte failed.
-        // Check if the initial rip was even readable before printing "out of range"
-        uint8_t temp_val;
-        if (!read_memory_byte(rip, temp_val) && !is_address_in_executable_region(rip))
-        {
-            std::cout << "** the address is out of the range of the executable region." << std::endl;
-        }
-        // If read failed but it *was* in an executable region, capstone might still fail below.
-        // The original message "the address is out of the range..." is tied to is_address_in_executable_region.
-        // Let Capstone try with whatever (possibly empty) buffer we got.
-    }
-
-    cs_insn *insn;
-    size_t disasm_instr_count = cs_disasm(m_capstone_handle, code_buffer.data(), code_buffer.size(), rip, 0, &insn);
 
     int instructions_printed = 0;
+    bool boundary_message_printed_this_call = false;
+
     if (disasm_instr_count > 0)
     {
         for (size_t i = 0; i < disasm_instr_count && instructions_printed < count; ++i)
@@ -337,11 +329,13 @@ void Debugger::disassemble_and_print(unsigned long long rip, int count)
                     break;
                 }
             }
+
             if (!instr_fully_in_exec)
             {
-                if (instructions_printed == 0)
+                if (!boundary_message_printed_this_call)
                 {
                     std::cout << "** the address is out of the range of the executable region." << std::endl;
+                    boundary_message_printed_this_call = true;
                 }
                 break;
             }
@@ -352,46 +346,26 @@ void Debugger::disassemble_and_print(unsigned long long rip, int count)
             {
                 bytes_ss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(insn[i].bytes[j]) << " ";
             }
-            std::cout << std::left << std::setw(30) << bytes_ss.str(); // Ensure sufficient width
+            std::cout << std::left << std::setw(30) << bytes_ss.str();
             std::cout << insn[i].mnemonic << "\t" << insn[i].op_str << std::endl;
             instructions_printed++;
         }
+
+        if (!boundary_message_printed_this_call &&      // If not print yet
+            instructions_printed < count &&             // Want print
+            instructions_printed == disasm_instr_count) // Have reach the print limit, Afterward is invalid
+        {
+            unsigned long long next_addr_after_capstone_last = insn[disasm_instr_count - 1].address + insn[disasm_instr_count - 1].size;
+            if (!is_address_in_executable_region(next_addr_after_capstone_last))
+            {
+                std::cout << "** the address is out of the range of the executable region." << std::endl;
+                boundary_message_printed_this_call = true;
+            }
+        }
         cs_free(insn, disasm_instr_count);
     }
-    else if (instructions_printed == 0)
-    { // No instructions disassembled
-        // If code_buffer was populated but capstone found nothing, this might be invalid opcodes.
-        // If code_buffer was empty due to read failures, this also applies.
-        // The original code had a complex set of conditions here.
-        // Let's simplify: if nothing printed, and RIP was supposed to be in an executable region,
-        // something is wrong. If it wasn't in an executable region, the message might have already appeared.
-        if (is_address_in_executable_region(rip) && code_buffer.empty())
-        {
-            std::cout << "** failed to read memory for disassembly at 0x" << std::hex << rip << std::dec << "." << std::endl;
-        }
-        else if (!is_address_in_executable_region(rip) && instructions_printed == 0)
-        {
-            // Message might be redundant if already printed by the instr_fully_in_exec check inside the loop for the first instruction.
-            // Or if code_buffer was empty and !is_address_in_executable_region triggered earlier.
-            // To avoid double printing, only print if not printed before.
-            // This logic is tricky; the original spec focuses on the boundary for the *set* of 5 instructions.
-        }
-    }
-
-    // If fewer than 'count' instructions were printed, and the last one was near a boundary.
-    if (instructions_printed > 0 && instructions_printed < count && disasm_instr_count > 0)
+    else // disasm_instr_count == 0
     {
-        // Check if the *next* instruction would be out of bounds
-        unsigned long long next_instr_addr = insn[disasm_instr_count - 1].address + insn[disasm_instr_count - 1].size;
-        if (!is_address_in_executable_region(next_instr_addr))
-        {
-            std::cout << "** the address is out of the range of the executable region." << std::endl;
-        }
-    }
-    else if (instructions_printed == 0 && disasm_instr_count == 0 && code_buffer.empty() && !is_address_in_executable_region(rip))
-    {
-        // This specific combination was in your original code leading to the message.
-        // It might be covered by earlier checks now.
     }
 
     std::cout << std::dec;
@@ -411,7 +385,7 @@ bool Debugger::read_memory_byte(unsigned long long addr, uint8_t &value)
         // Commented out for less verbose default, enable if needed
         return false;
     }
-
+    // Move the fd read ptr to the offset
     if (lseek(fd, static_cast<off_t>(addr), SEEK_SET) == -1)
     {
         // std::cerr << "[DEBUG read_memory_byte] Failed to lseek to 0x" << std::hex << addr << std::dec << " in " << mem_path << ": " << strerror(errno) << std::endl;
@@ -563,6 +537,7 @@ unsigned long long Debugger::get_elf_file_entry_rva(const std::string &prog_path
     return ehdr.e_entry;
 }
 
+// Return the elf actual address
 unsigned long long Debugger::get_auxv_val(pid_t cpid, unsigned long long type) const
 {
     std::ifstream auxv_file("/proc/" + std::to_string(cpid) + "/auxv", std::ios::binary);
@@ -579,6 +554,7 @@ unsigned long long Debugger::get_auxv_val(pid_t cpid, unsigned long long type) c
     return 0;
 }
 
+// Use the pid and addr, get the abs path
 std::string Debugger::read_string_from_child_mem(pid_t cpid, unsigned long long addr) const
 {
     std::string result;
@@ -752,7 +728,7 @@ bool Debugger::load_program(const std::string &program_path_arg)
             m_child_pid = -1;
             return false;
         }
-
+        // Set (SIGTRAP | 0x80), help for distinguish child syscall
         if (ptrace(PTRACE_SETOPTIONS, m_child_pid, 0, PTRACE_O_TRACESYSGOOD) == -1)
         {
             perror("ptrace PTRACE_SETOPTIONS PTRACE_O_TRACESYSGOOD");
@@ -763,6 +739,7 @@ bool Debugger::load_program(const std::string &program_path_arg)
 
         unsigned long long elf_e_entry = get_elf_file_entry_rva(m_program_name); // Uses member function
 
+        // Get the exec elf abs path name
         std::string execfn_path_str;
         unsigned long long at_execfn_addr = get_auxv_val(m_child_pid, AT_EXECFN);
         if (at_execfn_addr != 0)
@@ -789,7 +766,7 @@ bool Debugger::load_program(const std::string &program_path_arg)
         }
 
         m_program_base_addr = get_prog_base_from_maps(m_child_pid, execfn_path_str);
-
+        // Check ELF is PIE?
         Elf64_Ehdr ehdr_check;
         int fd_check = open(execfn_path_str.c_str(), O_RDONLY);
         bool is_pie_type = false;
@@ -801,9 +778,10 @@ bool Debugger::load_program(const std::string &program_path_arg)
             }
             close(fd_check);
         }
-
+        // Is PIE: Entrypoint = base + entry
         if (is_pie_type)
         {
+            // Unused check
             if (m_program_base_addr == 0)
             { // Maps failed for PIE
                 unsigned long long at_entry_val_aux = get_auxv_val(m_child_pid, AT_ENTRY);
@@ -830,7 +808,7 @@ bool Debugger::load_program(const std::string &program_path_arg)
         struct user_regs_struct regs;
         ptrace(PTRACE_GETREGS, m_child_pid, nullptr, &regs);
         m_current_rip = regs.rip;
-
+        // Check rip addr == entry_point, unused check
         if (m_current_rip != m_entry_point_addr && m_entry_point_addr != 0)
         {
             long temp_orig_byte = ptrace(PTRACE_PEEKTEXT, m_child_pid, m_entry_point_addr, nullptr);
@@ -1006,6 +984,7 @@ void Debugger::step_instruction()
                 regs.rip = bp_landed_on.address;
                 if (ptrace(PTRACE_SETREGS, m_child_pid, nullptr, &regs) == 0)
                 {
+                    // Actually, it's already the same.
                     m_current_rip = bp_landed_on.address;
                 }
                 else
@@ -1176,11 +1155,6 @@ void Debugger::set_breakpoint(const std::string &val_str, bool is_rva_cmd)
         return;
     }
 
-    // Optional: Keep the /proc/pid/maps diagnostic if you find it useful,
-    // but the byte-wise read will be the ultimate test for readability now.
-    // For brevity here, I'm omitting the explicit maps re-parsing block you added previously,
-    // as read_memory_byte() will determine readability directly.
-
     uint8_t original_byte_val;
     if (!read_memory_byte(target_address, original_byte_val))
     {
@@ -1216,12 +1190,10 @@ void Debugger::set_breakpoint(const std::string &val_str, bool is_rva_cmd)
     bp.rva_offset = is_rva_cmd ? input_val : 0;
 
     m_active_breakpoints[new_id] = bp;
+    // Handle same break set in same address
     if (!m_address_to_breakpoint_id.count(target_address))
     {
         m_address_to_breakpoint_id[target_address] = new_id;
-    }
-    else
-    {
     }
 
     enable_breakpoint_in_memory(m_active_breakpoints.at(new_id)); // Uses reference
